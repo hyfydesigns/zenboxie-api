@@ -118,7 +118,7 @@ static async exchangeCode(code, clientId, clientSecret, redirectUri) {
    *
    * @param {function} [onProgress] - (processed, total)
    */
-async fetchSenders(onProgress) {
+async fetchSenders(onProgress, limit = Infinity) {
   const safeDate = (val) => {
     if (!val) return null;
     try {
@@ -141,7 +141,7 @@ async fetchSenders(onProgress) {
   let pageToken = null;
   let totalFetched = 0;
 
-  // Step 1: collect all message IDs
+  // Step 1: collect message IDs (stop early once limit is reached)
   const allIds = [];
   do {
     const params = new URLSearchParams({ maxResults: 500, q: "in:inbox" });
@@ -150,14 +150,18 @@ async fetchSenders(onProgress) {
     if (!page?.messages) break;
     allIds.push(...page.messages.map(m => m.id));
     pageToken = page.nextPageToken || null;
+    if (allIds.length >= limit) break;
   } while (pageToken);
+
+  // Enforce scan limit — Gmail returns newest first, so take the first `limit` IDs
+  const limitedIds = limit < Infinity ? allIds.slice(0, limit) : allIds;
 
   // Step 2: fetch metadata in batches
   const CONCURRENCY = 10;
-  const total = allIds.length;
+  const total = limitedIds.length;
 
-  for (let i = 0; i < allIds.length; i += CONCURRENCY) {
-    const batch = allIds.slice(i, i + CONCURRENCY);
+  for (let i = 0; i < limitedIds.length; i += CONCURRENCY) {
+    const batch = limitedIds.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(id =>
         this._req(`/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`)
@@ -283,6 +287,46 @@ async fetchSenders(onProgress) {
       pageToken = page.nextPageToken || null;
     } while (pageToken);
     return ids;
+  }
+
+  // ─── Label / folder listing ──────────────────────────────────────────────────
+
+  async listLabels() {
+    const data = await this._req("/users/me/labels");
+    return (data.labels || []).map((l) => ({ path: l.id, name: l.name, type: l.type }));
+  }
+
+  // ─── Unsubscribe link ─────────────────────────────────────────────────────────
+
+  async getUnsubscribeLink(senderEmail) {
+    const ids = await this._listMessageIds(`from:${senderEmail} in:inbox`);
+    if (!ids.length) return null;
+
+    const msgId = ids[ids.length - 1];
+    const msg = await this._req(
+      `/users/me/messages/${msgId}?format=metadata&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post`
+    ).catch(() => null);
+    if (!msg) return null;
+
+    const headers = msg.payload?.headers || [];
+    const header = headers.find((h) => h.name.toLowerCase() === "list-unsubscribe");
+    if (!header?.value) return null;
+
+    return this._parseUnsubscribeHeader(header.value);
+  }
+
+  _parseUnsubscribeHeader(header) {
+    const urls = [];
+    const mailto = [];
+    const parts = header.split(/,\s*(?=<)/);
+    for (const part of parts) {
+      const m = part.match(/<([^>]+)>/);
+      if (!m) continue;
+      const val = m[1].trim();
+      if (val.startsWith("mailto:")) mailto.push(val);
+      else if (val.startsWith("http")) urls.push(val);
+    }
+    return { url: urls[0] || null, mailto: mailto[0] || null };
   }
 }
 

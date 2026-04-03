@@ -13,6 +13,10 @@ const router = express.Router();
 const ImapService = require("../services/ImapService");
 const GmailService = require("../services/GmailService");
 const sessionStore = require("../store/SessionStore");
+const tierGuard = require("../middleware/tierGuard");
+const { getLimits } = require("../config/tiers");
+const AiService = require("../services/AiService");
+const db = require("../db");
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -82,8 +86,18 @@ router.get("/analyze", async (req, res, next) => {
  *   data: { type: "done", senders: [...] }
  *   data: { type: "error", message: "..." }
  */
-router.get("/analyze/stream", async (req, res, next) => {
+router.get("/analyze/stream", tierGuard.canScan(), async (req, res, next) => {
   const { session } = req;
+  const folder = req.query.folder || "INBOX";
+  // Folder support is a Premium feature — non-INBOX folders are gated
+  if (folder !== "INBOX" && !getLimits(req.user).folderSupport) {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    res.write(`data: ${JSON.stringify({ type: "error", message: "Folder support is a Premium feature.", upgradeRequired: true })}\n\n`);
+    return res.end();
+  }
 
   // Set up SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -100,16 +114,23 @@ router.get("/analyze/stream", async (req, res, next) => {
     send({ type: "progress", processed, total });
   };
 
+  // Gate Gmail OAuth sessions for free users
+  if (session.provider === "gmail" && !getLimits(req.user).gmailOAuth) {
+    send({ type: "error", message: "Gmail OAuth is a Pro feature. Please upgrade.", upgradeRequired: true });
+    return res.end();
+  }
+
   try {
     let senders;
+    const scanLimit = req.scanLimit; // set by tierGuard.canScan()
 
     if (session.provider === "gmail") {
       const gmail = getGmailService(session);
-      senders = await gmail.fetchSenders(onProgress);
+      senders = await gmail.fetchSenders(onProgress, scanLimit);
     } else {
       const imap = await getImapService(session);
       try {
-        senders = await imap.fetchSenders(onProgress);
+        senders = await imap.fetchSenders(onProgress, folder, scanLimit);
       } finally {
         await imap.disconnect();
       }
@@ -118,7 +139,7 @@ router.get("/analyze/stream", async (req, res, next) => {
     sessionStore.update(req.sessionId, { cachedSenders: senders });
 
     const safe = senders.map(({ _uids, ...s }) => s);
-    send({ type: "done", senders: safe, total: safe.length });
+    send({ type: "done", senders: safe, total: safe.length, scanLimit: scanLimit === Infinity ? null : scanLimit });
     res.end();
   } catch (err) {
     send({ type: "error", message: err.message });
@@ -182,7 +203,7 @@ router.get("/sample/:sender", async (req, res, next) => {
  * POST /api/emails/delete
  * Body: { senderEmail, permanent?: boolean }
  */
-router.post("/delete", async (req, res, next) => {
+router.post("/delete", tierGuard.canDelete(), tierGuard.canPermanentDelete(), async (req, res, next) => {
   console.log("DELETE request:", req.body);
   console.log("Session provider:", req.session?.provider);
   const { senderEmail, permanent = false } = req.body;
@@ -213,6 +234,20 @@ router.post("/delete", async (req, res, next) => {
       }
     }
 
+    // Log usage for tier enforcement
+    if (req.user) {
+      db.usageLog.create({
+        data: { userId: req.user.id, action: "DELETE_SENDER" },
+      }).catch(() => {});
+    } else if (req.sessionId) {
+      // Session-only user — increment in-memory counter
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      sessionStore.update(req.sessionId, {
+        deletionDate: today.getTime(),
+        deletionCount: (req._sessionDeleteCount || 0) + 1,
+      });
+    }
+
     // Remove from cached sender list
     if (session.cachedSenders) {
       const updated = session.cachedSenders.filter(s => s.email !== senderEmail);
@@ -234,6 +269,91 @@ router.post("/delete", async (req, res, next) => {
       error: err.message || "Delete failed",
       success: false,
     });
+  }
+});
+
+// ─── List folders (Premium: folderSupport) ────────────────────────────────────
+
+router.get("/folders", async (req, res, next) => {
+  const { session } = req;
+  try {
+    let folders;
+    if (session.provider === "gmail") {
+      const gmail = getGmailService(session);
+      folders = await gmail.listLabels();
+    } else {
+      const imap = await getImapService(session);
+      try {
+        folders = await imap.listFolders();
+      } finally {
+        await imap.disconnect();
+      }
+    }
+    res.json({ folders });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Unsubscribe link (Premium: unsubscribe) ──────────────────────────────────
+
+router.get("/unsubscribe/:sender", async (req, res, next) => {
+  const { session } = req;
+  const limits = getLimits(req.user);
+  if (!limits.unsubscribe) {
+    return res.status(403).json({
+      error: "Unsubscribe is a Premium feature.",
+      upgradeRequired: true,
+      currentTier: req.user?.subscription?.tier ?? "FREE",
+    });
+  }
+
+  try {
+    const sender = decodeURIComponent(req.params.sender);
+    let result;
+    if (session.provider === "gmail") {
+      const gmail = getGmailService(session);
+      result = await gmail.getUnsubscribeLink(sender);
+    } else {
+      const imap = await getImapService(session);
+      try {
+        result = await imap.getUnsubscribeLink(sender);
+      } finally {
+        await imap.disconnect();
+      }
+    }
+    res.json({ sender, unsubscribe: result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── AI analyze (Premium: smartFilters) ──────────────────────────────────────
+
+router.post("/ai-analyze", async (req, res, next) => {
+  const { session } = req;
+  const limits = getLimits(req.user);
+  if (!limits.smartFilters) {
+    return res.status(403).json({
+      error: "AI smart filters is a Premium feature.",
+      upgradeRequired: true,
+      currentTier: req.user?.subscription?.tier ?? "FREE",
+    });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(503).json({ error: "AI analysis is not configured on this server." });
+  }
+
+  try {
+    const senders = session.cachedSenders;
+    if (!senders?.length) {
+      return res.status(400).json({ error: "No scan data found. Run /analyze first." });
+    }
+    const result = await AiService.analyzeSenders(senders);
+    res.json(result);
+  } catch (err) {
+    next(err);
   }
 });
 

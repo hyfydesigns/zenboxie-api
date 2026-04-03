@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String?
+  googleId     String?       @unique
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  subscription        Subscription?
+  connectedAccounts   ConnectedAccount[]
+  usageLogs           UsageLog[]
+  autoCleanRules      AutoCleanRule[]
+  retentionRules      RetentionRule[]
+  teamInvitesSent     TeamInvite[]       @relation("TeamOwner")
+  teamInvitesReceived TeamInvite[]       @relation("TeamMember")
+}
+
+model UsageLog {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action    UsageAction
+  count     Int         @default(1)
+  createdAt DateTime    @default(now())
+
+  @@index([userId, action])
+}
+
+model ConnectedAccount {
+  id                   String    @id @default(cuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider             Provider
+  email                String
+  encryptedCredentials String
+  isActive             Boolean   @default(true)
+  lastUsedAt           DateTime?
+  createdAt            DateTime  @default(now())
+
+  autoCleanRules AutoCleanRule[]
+  retentionRules RetentionRule[]
+
+  @@unique([userId, email])
+}
+
+model AutoCleanRule {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectedAccountId String
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  senderEmail        String
+  senderName         String?
+  permanent          Boolean          @default(false)
+  schedule           String           // cron expression e.g. "0 3 * * 1"
+  label              String?
+  isActive           Boolean          @default(true)
+  lastRunAt          DateTime?
+  lastRunStatus      String?          // "success" | "error"
+  createdAt          DateTime         @default(now())
+
+  @@index([userId])
+}
+
+model Subscription {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  user             User      @relation(fields: [userId], references: [id])
+  tier             Tier      @default(FREE)
+  stripeCustomerId String?   @unique
+  stripeSubId      String?   @unique
+  status           SubStatus @default(ACTIVE)
+  currentPeriodEnd    DateTime?
+  cancelAtPeriodEnd   Boolean   @default(false)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+enum UsageAction {
+  DELETE_SENDER
+  SCAN
+  EXPORT
+}
+
+enum Provider {
+  IMAP
+  GMAIL
+  OUTLOOK
+}
+
+enum Tier {
+  FREE
+  PRO
+  PREMIUM
+}
+
+enum SubStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+}
+
+model RetentionRule {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectedAccountId String
+  connectedAccount   ConnectedAccount @relation(fields: [connectedAccountId], references: [id], onDelete: Cascade)
+  senderEmail        String
+  senderName         String?
+  keepCount          Int?             // keep N most recent, delete older
+  keepDays           Int?             // keep emails from last N days, delete older
+  schedule           String           // cron expression
+  label              String?
+  isActive           Boolean          @default(true)
+  lastRunAt          DateTime?
+  lastRunStatus      String?
+  createdAt          DateTime         @default(now())
+
+  @@index([userId])
+}
+
+model TeamInvite {
+  id           String       @id @default(cuid())
+  ownerId      String
+  owner        User         @relation("TeamOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  inviteeEmail String
+  inviteeId    String?
+  invitee      User?        @relation("TeamMember", fields: [inviteeId], references: [id])
+  status       InviteStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+
+  @@unique([ownerId, inviteeEmail])
+  @@index([inviteeEmail])
+}

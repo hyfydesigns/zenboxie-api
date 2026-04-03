@@ -94,11 +94,12 @@ class ImapService {
    * Returns array of SenderGroup sorted by count descending.
    *
    * @param {function} [onProgress] - called with (processed, total)
+   * @param {string} [folder="INBOX"] - mailbox folder to scan
    */
-  async fetchSenders(onProgress) {
-    const lock = await this.client.getMailboxLock("INBOX");
+  async fetchSenders(onProgress, folder = "INBOX", limit = Infinity) {
+    const lock = await this.client.getMailboxLock(folder);
     try {
-      const status = await this.client.status("INBOX", { messages: true, unseen: true });
+      const status = await this.client.status(folder, { messages: true, unseen: true });
       const total = status.messages;
 
       if (total === 0) return [];
@@ -106,8 +107,11 @@ class ImapService {
       const senderMap = new Map();
       let processed = 0;
 
+      // For limited scans, scan the most recent `limit` emails (highest seq numbers)
+      const scanFrom = limit < total ? total - limit + 1 : 1;
+
       // Fetch in batches to avoid memory issues on huge inboxes
-      for (let start = 1; start <= total; start += BATCH_SIZE) {
+      for (let start = scanFrom; start <= total; start += BATCH_SIZE) {
         const end = Math.min(start + BATCH_SIZE - 1, total);
         const range = `${start}:${end}`;
 
@@ -151,7 +155,7 @@ class ImapService {
           processed++;
         }
 
-        if (onProgress) onProgress(processed, total);
+        if (onProgress) onProgress(processed, total - scanFrom + 1);
       }
 
       // Build final output
@@ -276,6 +280,66 @@ async deleteFromSender(senderEmail, options = {}) {
     } finally {
       lock.release();
     }
+  }
+
+  // ─── Folder listing ──────────────────────────────────────────────────────────
+
+  async listFolders() {
+    const tree = await this.client.listTree();
+    const flatten = (folders, depth = 0) => {
+      const result = [];
+      for (const f of folders || []) {
+        if (!f.flags?.has("\\Noselect")) {
+          result.push({ path: f.path, name: f.name, specialUse: f.specialUse || null });
+        }
+        result.push(...flatten(f.folders, depth + 1));
+      }
+      return result;
+    };
+    return flatten(tree.folders);
+  }
+
+  // ─── Unsubscribe link ─────────────────────────────────────────────────────────
+
+  async getUnsubscribeLink(senderEmail, folder = "INBOX") {
+    const lock = await this.client.getMailboxLock(folder);
+    try {
+      const uids = await this.client.search({ from: senderEmail }, { uid: true });
+      if (!uids?.length) return null;
+
+      // Check the most recent email
+      const uid = uids[uids.length - 1];
+      let unsubscribeHeader = null;
+
+      for await (const msg of this.client.fetch(
+        String(uid),
+        { headers: ["list-unsubscribe", "list-unsubscribe-post"] },
+        { uid: true }
+      )) {
+        const raw = msg.headers?.toString() || "";
+        const match = raw.match(/list-unsubscribe:\s*(.+)/i);
+        if (match) unsubscribeHeader = match[1].trim();
+      }
+
+      if (!unsubscribeHeader) return null;
+      return this._parseUnsubscribeHeader(unsubscribeHeader);
+    } finally {
+      lock.release();
+    }
+  }
+
+  _parseUnsubscribeHeader(header) {
+    const urls = [];
+    const mailto = [];
+    const parts = header.split(/,\s*(?=<)/);
+    for (const part of parts) {
+      const m = part.match(/<([^>]+)>/);
+      if (!m) continue;
+      const val = m[1].trim();
+      if (val.startsWith("mailto:")) mailto.push(val);
+      else if (val.startsWith("http")) urls.push(val);
+    }
+    return { url: urls[0] || null, mailto: mailto[0] || null };
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
