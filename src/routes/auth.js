@@ -255,7 +255,8 @@ router.get("/google/callback", optionalUser, async (req, res, next) => {
     pendingOAuth.set(oauthToken, { sessionId, email: profile.emailAddress });
     setTimeout(() => pendingOAuth.delete(oauthToken), 5 * 60 * 1000);
 
-    res.redirect(`${process.env.FRONTEND_URL}/oauth-callback.html?token=${oauthToken}`);
+    const apiBase = encodeURIComponent(process.env.API_URL || `http://localhost:3001`);
+    res.redirect(`${process.env.FRONTEND_URL}/oauth-callback.html?token=${oauthToken}&api=${apiBase}`);
 
   } catch (err) {
     next(err);
