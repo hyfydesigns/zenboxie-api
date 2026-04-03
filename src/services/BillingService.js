@@ -90,12 +90,16 @@ async function createPortalSession(user) {
   const customerId = await ensureCustomer(user);
   const base = process.env.FRONTEND_URL || "http://localhost:5173";
 
-  const session = await stripe.billingPortal.sessions.create({
-    customer: customerId,
-    return_url: `${base}/account`,
-  });
-
-  return session.url;
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${base}/account`,
+    });
+    return session.url;
+  } catch (err) {
+    console.error("[BillingService] Portal error:", err.type, err.code, err.message, err.statusCode);
+    throw err;
+  }
 }
 
 // ─── Subscription sync (from Stripe object) ───────────────────────────────────
