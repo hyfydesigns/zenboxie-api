@@ -15,7 +15,10 @@ function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
     throw new Error("Stripe is not configured. Set STRIPE_SECRET_KEY.");
   }
-  return require("stripe")(process.env.STRIPE_SECRET_KEY);
+  return require("stripe")(process.env.STRIPE_SECRET_KEY.trim(), {
+    timeout: 30000,
+    maxNetworkRetries: 1,
+  });
 }
 
 const PRICE_IDS = {
