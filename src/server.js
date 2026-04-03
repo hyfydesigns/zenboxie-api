@@ -33,6 +33,9 @@ process.on("unhandledRejection", (reason) => {
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust Railway/Vercel reverse proxy so rate limiting works correctly
+app.set("trust proxy", 1);
+
 app.listen(PORT, () => {
   console.log(`\n🚀 Inbox Cleaner API running on http://localhost:${PORT}`);
   console.log(`   Health check: http://localhost:${PORT}/api/health\n`);
