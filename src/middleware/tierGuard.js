@@ -80,12 +80,14 @@ const tierGuard = {
   canPermanentDelete() {
     return (req, res, next) => {
       if (!req.body.permanent) return next();
+      const tier = getTier(req.user);
       const limits = getLimits(req.user);
+      console.log("[tierGuard] canPermanentDelete — userId:", req.user?.id, "tier:", tier, "allowed:", limits.permanentDelete);
       if (limits.permanentDelete) return next();
       return denied(
         res,
         "Permanent delete is a Pro feature. Free plan only moves emails to trash.",
-        getTier(req.user)
+        tier
       );
     };
   },
