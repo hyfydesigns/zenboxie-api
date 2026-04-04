@@ -100,7 +100,7 @@ router.post("/imap", optionalUser, async (req, res, next) => {
  * GET /api/auth/google/url
  * Returns the Google OAuth2 consent page URL.
  */
-router.get("/google/url", (_req, res) => {
+router.get("/google/url", optionalUser, (req, res) => {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const redirectUri = process.env.GOOGLE_REDIRECT_URI || "http://localhost:3001/api/auth/google/callback";
 
@@ -108,7 +108,11 @@ router.get("/google/url", (_req, res) => {
     return res.status(503).json({ error: "Google OAuth is not configured on this server." });
   }
 
-  const url = GmailService.getAuthUrl(clientId, redirectUri);
+  // Embed the JWT in state so the callback can identify the logged-in user
+  const token = req.headers.authorization?.slice(7) || "";
+  const state = token ? Buffer.from(JSON.stringify({ token })).toString("base64") : "";
+
+  const url = GmailService.getAuthUrl(clientId, redirectUri, null, state);
   res.json({ url });
 });
 
@@ -204,9 +208,25 @@ router.post("/google", optionalUser, async (req, res, next) => {
  * GET /api/auth/google/callback
  * Handles the redirect from Google during server-side OAuth flow.
  */
-router.get("/google/callback", optionalUser, async (req, res, next) => {
+router.get("/google/callback", async (req, res, next) => {
   try {
-    const { code, error } = req.query;
+    const { code, error, state } = req.query;
+
+    // Recover user from JWT embedded in state param
+    if (state && !req.user) {
+      try {
+        const { token } = JSON.parse(Buffer.from(state, "base64").toString());
+        if (token) {
+          const AuthService = require("../services/AuthService");
+          const payload = AuthService.verifyAccessToken(token);
+          if (payload) {
+            const db = require("../db");
+            const user = await db.user.findUnique({ where: { id: payload.userId }, include: { subscription: true } }).catch(() => null);
+            if (user) req.user = user;
+          }
+        }
+      } catch (_) {}
+    }
 
     if (error) {
       return res.send("<html><body><p>Authentication failed: " + error + "</p></body></html>");

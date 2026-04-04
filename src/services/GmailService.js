@@ -23,7 +23,7 @@ class GmailService {
 
   // ─── Auth helpers ───────────────────────────────────────────────────────────
 
-static getAuthUrl(clientId, redirectUri, scopes) {
+static getAuthUrl(clientId, redirectUri, scopes, state) {
   const defaultScopes = [
     "https://www.googleapis.com/auth/gmail.modify",  // move to trash
     "https://mail.google.com/",                       // permanent delete (batchDelete requires this)
@@ -37,6 +37,7 @@ static getAuthUrl(clientId, redirectUri, scopes) {
       scope: (scopes || defaultScopes).join(" "),
       access_type: "offline",
       prompt: "consent",
+      ...(state && { state }),
     });
     return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
   }
