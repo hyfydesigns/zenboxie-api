@@ -81,7 +81,7 @@ static async exchangeCode(code, clientId, clientSecret, redirectUri) {
 
   // ─── Core API request ───────────────────────────────────────────────────────
 
-  async _req(path, options = {}) {
+  async _req(path, options = {}, retries = 3) {
     const res = await fetch(`${GMAIL_API}${path}`, {
       ...options,
       headers: {
@@ -95,6 +95,17 @@ static async exchangeCode(code, clientId, clientSecret, redirectUri) {
       const e = new Error("OAuth token expired or revoked");
       e.tokenExpired = true;
       throw e;
+    }
+
+    // Retry on rate limit (403 rateLimitExceeded or 429)
+    if ((res.status === 429 || res.status === 403) && retries > 0) {
+      const body = await res.text();
+      if (body.includes("rateLimitExceeded") || body.includes("RATE_LIMIT_EXCEEDED") || res.status === 429) {
+        const delay = (4 - retries) * 2000; // 2s, 4s, 6s
+        await new Promise(r => setTimeout(r, delay));
+        return this._req(path, options, retries - 1);
+      }
+      throw new Error(`Gmail API ${path} returned ${res.status}: ${body}`);
     }
 
     if (!res.ok) {
@@ -158,10 +169,12 @@ async fetchSenders(onProgress, limit = Infinity) {
   const limitedIds = limit < Infinity ? allIds.slice(0, limit) : allIds;
 
   // Step 2: fetch metadata in batches
-  const CONCURRENCY = 10;
+  const CONCURRENCY = 5;
+  const BATCH_DELAY_MS = 200; // stay well under 15000 QPM per user
   const total = limitedIds.length;
 
   for (let i = 0; i < limitedIds.length; i += CONCURRENCY) {
+    if (i > 0) await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
     const batch = limitedIds.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(id =>
