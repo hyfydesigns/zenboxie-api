@@ -10,6 +10,7 @@
  */
 
 const db = require("../db");
+const { sendSubscriptionEmail } = require("./EmailService");
 
 function getStripe() {
   if (!process.env.STRIPE_SECRET_KEY) {
@@ -193,6 +194,13 @@ async function handleWebhook(rawBody, signature) {
         }
 
         await syncSubscription(sub);
+
+        // Send subscription confirmation email
+        if (userId) {
+          const user = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+          const tier = sub.items.data[0]?.price?.id === process.env.STRIPE_PREMIUM_PRICE_ID ? "PREMIUM" : "PRO";
+          if (user?.email) sendSubscriptionEmail(user.email, tier).catch(() => {});
+        }
       }
       break;
     }
