@@ -227,6 +227,39 @@ router.post("/resend-verification-by-email", async (req, res, next) => {
   }
 });
 
+// ─── Delete Account ───────────────────────────────────────────────────────────
+
+router.delete("/me", requireUser, async (req, res, next) => {
+  try {
+    const userId = req.user.id;
+
+    // Cancel Stripe subscription immediately if one exists
+    const subscription = await db.subscription.findUnique({ where: { userId } });
+    if (subscription?.stripeSubId && process.env.STRIPE_SECRET_KEY) {
+      try {
+        const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY.trim(), { timeout: 30000 });
+        await stripe.subscriptions.cancel(subscription.stripeSubId);
+      } catch (stripeErr) {
+        // Log but don't block account deletion if Stripe call fails
+        console.error("[DeleteAccount] Stripe cancellation failed:", stripeErr.message);
+      }
+    }
+
+    // Delete subscription record first (no cascade on User→Subscription)
+    if (subscription) {
+      await db.subscription.delete({ where: { userId } }).catch(() => {});
+    }
+
+    // Delete the user — cascades ConnectedAccounts, UsageLogs, AutoCleanRules,
+    // RetentionRules, and TeamInvites (owner side)
+    await db.user.delete({ where: { id: userId } });
+
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Logout ───────────────────────────────────────────────────────────────────
 
 router.post("/logout", (req, res) => {
