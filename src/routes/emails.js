@@ -328,6 +328,42 @@ router.get("/unsubscribe/:sender", async (req, res, next) => {
   }
 });
 
+// ─── Unsubscribe redirect — opens URL directly in browser tab ─────────────────
+
+router.get("/unsubscribe/:sender/redirect", async (req, res, next) => {
+  const { session } = req;
+  const limits = getLimits(req.user);
+  if (!limits.unsubscribe) {
+    return res.status(403).send("Unsubscribe is a Premium feature.");
+  }
+
+  try {
+    const sender = decodeURIComponent(req.params.sender);
+    let result;
+    if (session.provider === "gmail") {
+      const gmail = getGmailService(session);
+      result = await gmail.getUnsubscribeLink(sender);
+    } else {
+      const imap = await getImapService(session);
+      try {
+        result = await imap.getUnsubscribeLink(sender);
+      } finally {
+        await imap.disconnect();
+      }
+    }
+
+    if (result?.url) {
+      return res.redirect(result.url);
+    } else if (result?.mailto) {
+      return res.redirect(result.mailto);
+    } else {
+      return res.status(404).send("No unsubscribe link found for this sender.");
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── AI analyze (Premium: smartFilters) ──────────────────────────────────────
 
 router.post("/ai-analyze", async (req, res, next) => {
