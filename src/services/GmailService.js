@@ -169,12 +169,10 @@ async fetchSenders(onProgress, limit = Infinity) {
   const limitedIds = limit < Infinity ? allIds.slice(0, limit) : allIds;
 
   // Step 2: fetch metadata in batches
-  const CONCURRENCY = 5;
-  const BATCH_DELAY_MS = 200; // stay well under 15000 QPM per user
+  const CONCURRENCY = 10;
   const total = limitedIds.length;
 
   for (let i = 0; i < limitedIds.length; i += CONCURRENCY) {
-    if (i > 0) await new Promise(r => setTimeout(r, BATCH_DELAY_MS));
     const batch = limitedIds.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(id =>
