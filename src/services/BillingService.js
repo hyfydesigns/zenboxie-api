@@ -76,7 +76,7 @@ async function createCheckoutSession(user, tier) {
     customer: customerId,
     mode: "subscription",
     line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${base}/?upgraded=1`,
+    success_url: `${base}/account?upgraded=1`,
     cancel_url: `${base}/pricing`,
     allow_promotion_codes: true,
     client_reference_id: user.id,
