@@ -315,28 +315,11 @@ async fetchSenders(onProgress, limit = Infinity) {
     if (!ids.length) return null;
 
     const msgId = ids[ids.length - 1];
-    const msg = await this._req(
-      `/users/me/messages/${msgId}?format=metadata&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post`
-    ).catch(() => null);
-    if (!msg) return null;
-
-    const headers = msg.payload?.headers || [];
-    const header = headers.find((h) => h.name.toLowerCase() === "list-unsubscribe");
-    if (header?.value) {
-      const parsed = this._parseUnsubscribeHeader(header.value);
-      // Prefer HTTP URL — only fall through to body scan if we only got mailto
-      if (parsed.url) return parsed;
-    }
-
-    // Fall back: scan the email body for an unsubscribe link
     const full = await this._req(`/users/me/messages/${msgId}?format=full`).catch(() => null);
-    if (full) {
-      const bodyUrl = this._extractUnsubscribeFromBody(full.payload);
-      if (bodyUrl) return { url: bodyUrl, mailto: null };
-    }
+    if (!full) return null;
 
-    // Last resort: return the mailto if we have it
-    if (header?.value) return this._parseUnsubscribeHeader(header.value);
+    const bodyUrl = this._extractUnsubscribeFromBody(full.payload);
+    if (bodyUrl) return { url: bodyUrl, mailto: null };
     return null;
   }
 
