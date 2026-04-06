@@ -307,22 +307,44 @@ async deleteFromSender(senderEmail, options = {}) {
       const uids = await this.client.search({ from: senderEmail }, { uid: true });
       if (!uids?.length) return null;
 
-      // Check the most recent email
       const uid = uids[uids.length - 1];
       let unsubscribeHeader = null;
+      let htmlBody = "";
 
       for await (const msg of this.client.fetch(
         String(uid),
-        { headers: ["list-unsubscribe", "list-unsubscribe-post"] },
+        { headers: ["list-unsubscribe", "list-unsubscribe-post"], bodyParts: ["1", "1.1"] },
         { uid: true }
       )) {
         const raw = msg.headers?.toString() || "";
         const match = raw.match(/list-unsubscribe:\s*(.+)/i);
         if (match) unsubscribeHeader = match[1].trim();
+
+        // Collect HTML body parts
+        for (const [, content] of (msg.bodyParts || new Map())) {
+          const text = content?.toString() || "";
+          if (text.toLowerCase().includes("<html") || text.includes("href=")) {
+            htmlBody += text;
+          }
+        }
       }
 
-      if (!unsubscribeHeader) return null;
-      return this._parseUnsubscribeHeader(unsubscribeHeader);
+      // Prefer HTTP URL from header
+      if (unsubscribeHeader) {
+        const parsed = this._parseUnsubscribeHeader(unsubscribeHeader);
+        if (parsed.url) return parsed;
+      }
+
+      // Fall back: scan body HTML for unsubscribe link
+      if (htmlBody) {
+        const linkRegex = /href=["']([^"']*unsubscribe[^"']*)["']/gi;
+        const match = linkRegex.exec(htmlBody);
+        if (match && match[1].startsWith("http")) return { url: match[1], mailto: null };
+      }
+
+      // Last resort: return mailto
+      if (unsubscribeHeader) return this._parseUnsubscribeHeader(unsubscribeHeader);
+      return null;
     } finally {
       lock.release();
     }

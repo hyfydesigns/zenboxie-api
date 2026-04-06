@@ -322,9 +322,43 @@ async fetchSenders(onProgress, limit = Infinity) {
 
     const headers = msg.payload?.headers || [];
     const header = headers.find((h) => h.name.toLowerCase() === "list-unsubscribe");
-    if (!header?.value) return null;
+    if (header?.value) {
+      const parsed = this._parseUnsubscribeHeader(header.value);
+      // Prefer HTTP URL — only fall through to body scan if we only got mailto
+      if (parsed.url) return parsed;
+    }
 
-    return this._parseUnsubscribeHeader(header.value);
+    // Fall back: scan the email body for an unsubscribe link
+    const full = await this._req(`/users/me/messages/${msgId}?format=full`).catch(() => null);
+    if (full) {
+      const bodyUrl = this._extractUnsubscribeFromBody(full.payload);
+      if (bodyUrl) return { url: bodyUrl, mailto: null };
+    }
+
+    // Last resort: return the mailto if we have it
+    if (header?.value) return this._parseUnsubscribeHeader(header.value);
+    return null;
+  }
+
+  _extractUnsubscribeFromBody(payload) {
+    if (!payload) return null;
+    let html = "";
+
+    const extractParts = (part) => {
+      if (part.mimeType === "text/html" && part.body?.data) {
+        html += Buffer.from(part.body.data, "base64").toString("utf-8");
+      }
+      if (part.parts) part.parts.forEach(extractParts);
+    };
+    extractParts(payload);
+
+    if (!html) return null;
+
+    // Find all href links containing "unsubscribe"
+    const linkRegex = /href=["']([^"']*unsubscribe[^"']*)["']/gi;
+    const match = linkRegex.exec(html);
+    if (match && match[1].startsWith("http")) return match[1];
+    return null;
   }
 
   _parseUnsubscribeHeader(header) {
