@@ -10,9 +10,11 @@
 
 const express = require("express");
 const router = express.Router();
+const crypto = require("crypto");
 const db = require("../db");
 const AuthService = require("../services/AuthService");
 const requireUser = require("../middleware/requireUser");
+const { sendWelcomeEmail, sendVerificationSuccessEmail } = require("../services/EmailService");
 
 // ─── Register ─────────────────────────────────────────────────────────────────
 
@@ -36,15 +38,28 @@ router.post("/register", async (req, res, next) => {
     }
 
     const passwordHash = await AuthService.hashPassword(password);
+    const verificationToken = crypto.randomBytes(32).toString("hex");
+    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+
     const user = await db.user.create({
-      data: { email, passwordHash },
+      data: {
+        email,
+        passwordHash,
+        emailVerificationToken: verificationToken,
+        emailVerificationExpiry: verificationExpiry,
+      },
       include: { subscription: true },
     });
+
+    // Send welcome email in background — don't block registration
+    sendWelcomeEmail(email, verificationToken).catch((err) =>
+      console.error("[EmailService] Failed to send welcome email:", err.message)
+    );
 
     const { accessToken, refreshToken } = AuthService.signTokens(user.id);
 
     res.status(201).json({
-      user: { id: user.id, email: user.email, tier: user.subscription?.tier ?? "FREE" },
+      user: { id: user.id, email: user.email, tier: user.subscription?.tier ?? "FREE", emailVerified: false },
       accessToken,
       refreshToken,
     });
@@ -126,15 +141,61 @@ router.post("/refresh", async (req, res, next) => {
 // ─── Me ───────────────────────────────────────────────────────────────────────
 
 router.get("/me", requireUser, (req, res) => {
-  const { id, email, subscription } = req.user;
-  res.json({ user: { id, email, tier: subscription?.tier ?? "FREE" } });
+  const { id, email, subscription, emailVerified } = req.user;
+  res.json({ user: { id, email, tier: subscription?.tier ?? "FREE", emailVerified: emailVerified ?? false } });
+});
+
+// ─── Verify Email ─────────────────────────────────────────────────────────────
+
+router.get("/verify", async (req, res, next) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ error: "Verification token is required." });
+
+    const user = await db.user.findUnique({ where: { emailVerificationToken: token } });
+
+    if (!user) return res.status(400).json({ error: "Invalid or expired verification link." });
+    if (new Date() > new Date(user.emailVerificationExpiry)) {
+      return res.status(400).json({ error: "Verification link has expired. Please request a new one." });
+    }
+
+    await db.user.update({
+      where: { id: user.id },
+      data: { emailVerified: true, emailVerificationToken: null, emailVerificationExpiry: null },
+    });
+
+    sendVerificationSuccessEmail(user.email).catch(() => {});
+
+    res.json({ verified: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Resend Verification Email ────────────────────────────────────────────────
+
+router.post("/resend-verification", requireUser, async (req, res, next) => {
+  try {
+    if (req.user.emailVerified) return res.json({ message: "Email already verified." });
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await db.user.update({
+      where: { id: req.user.id },
+      data: { emailVerificationToken: token, emailVerificationExpiry: expiry },
+    });
+
+    await sendWelcomeEmail(req.user.email, token);
+    res.json({ message: "Verification email sent." });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ─── Logout ───────────────────────────────────────────────────────────────────
 
 router.post("/logout", (req, res) => {
-  // Tokens are stateless JWTs — the client removes them.
-  // Phase 3 will add a refresh token blocklist.
   res.json({ message: "Logged out." });
 });
 
