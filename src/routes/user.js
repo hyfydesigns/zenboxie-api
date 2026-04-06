@@ -92,10 +92,18 @@ router.post("/login", async (req, res, next) => {
       return res.status(401).json({ error: "Invalid email or password." });
     }
 
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        error: "Please verify your email before signing in. Check your inbox for the activation link.",
+        emailNotVerified: true,
+        email: user.email,
+      });
+    }
+
     const { accessToken, refreshToken } = AuthService.signTokens(user.id);
 
     res.json({
-      user: { id: user.id, email: user.email, tier: user.subscription?.tier ?? "FREE" },
+      user: { id: user.id, email: user.email, tier: user.subscription?.tier ?? "FREE", emailVerified: true },
       accessToken,
       refreshToken,
     });
@@ -172,7 +180,7 @@ router.get("/verify", async (req, res, next) => {
   }
 });
 
-// ─── Resend Verification Email ────────────────────────────────────────────────
+// ─── Resend Verification Email (authenticated) ───────────────────────────────
 
 router.post("/resend-verification", requireUser, async (req, res, next) => {
   try {
@@ -188,6 +196,32 @@ router.post("/resend-verification", requireUser, async (req, res, next) => {
 
     await sendWelcomeEmail(req.user.email, token);
     res.json({ message: "Verification email sent." });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─── Resend Verification Email (by email — for login page) ───────────────────
+
+router.post("/resend-verification-by-email", async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: "Email is required." });
+
+    const user = await db.user.findUnique({ where: { email } });
+    // Always return 200 to avoid email enumeration
+    if (!user || user.emailVerified) return res.json({ message: "If an unverified account exists, an email has been sent." });
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await db.user.update({
+      where: { id: user.id },
+      data: { emailVerificationToken: token, emailVerificationExpiry: expiry },
+    });
+
+    sendWelcomeEmail(user.email, token).catch(() => {});
+    res.json({ message: "If an unverified account exists, an email has been sent." });
   } catch (err) {
     next(err);
   }
