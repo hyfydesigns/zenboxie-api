@@ -227,6 +227,38 @@ router.post("/resend-verification-by-email", async (req, res, next) => {
   }
 });
 
+// ─── Change Password ──────────────────────────────────────────────────────────
+
+router.post("/change-password", requireUser, async (req, res, next) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "Current and new password are required." });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: "New password must be at least 8 characters." });
+    }
+
+    const user = await db.user.findUnique({ where: { id: req.user.id } });
+    if (!user?.passwordHash) {
+      return res.status(400).json({ error: "Password change is not available for accounts signed in with Google." });
+    }
+
+    const valid = await AuthService.verifyPassword(currentPassword, user.passwordHash);
+    if (!valid) {
+      return res.status(401).json({ error: "Current password is incorrect." });
+    }
+
+    const passwordHash = await AuthService.hashPassword(newPassword);
+    await db.user.update({ where: { id: req.user.id }, data: { passwordHash } });
+
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─── Delete Account ───────────────────────────────────────────────────────────
 
 router.delete("/me", requireUser, async (req, res, next) => {
