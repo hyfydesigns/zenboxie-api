@@ -66,7 +66,7 @@ Rules:
 
   const message = await client.messages.create({
     model: "claude-haiku-4-5-20251001",
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -74,7 +74,13 @@ Rules:
 
   // Strip markdown code fences if present
   const clean = text.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
-  return JSON.parse(clean);
+
+  try {
+    return JSON.parse(clean);
+  } catch (parseErr) {
+    console.error("[AiService] JSON parse failed. stop_reason:", message.stop_reason, "raw text:", text.slice(0, 500));
+    throw new Error("AI returned an incomplete response. Please try again.");
+  }
 }
 
 module.exports = { analyzeSenders };
