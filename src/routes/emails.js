@@ -381,12 +381,32 @@ router.post("/ai-analyze", async (req, res, next) => {
     return res.status(503).json({ error: "AI analysis is not configured on this server." });
   }
 
+  // Rate limit: 3 AI analysis calls per user per 24 hours
+  if (req.user) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const callsToday = await db.usageLog.count({
+      where: { userId: req.user.id, action: "AI_ANALYZE", createdAt: { gte: since } },
+    });
+    if (callsToday >= 3) {
+      return res.status(429).json({
+        error: "You've used all 3 AI analyses for today. Try again in 24 hours.",
+        retryAfter: 24,
+      });
+    }
+  }
+
   try {
     const senders = session.cachedSenders;
     if (!senders?.length) {
       return res.status(400).json({ error: "No scan data found. Run /analyze first." });
     }
     const result = await AiService.analyzeSenders(senders);
+
+    // Log the usage after a successful call
+    if (req.user) {
+      db.usageLog.create({ data: { userId: req.user.id, action: "AI_ANALYZE" } }).catch(() => {});
+    }
+
     res.json(result);
   } catch (err) {
     next(err);

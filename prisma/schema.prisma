@@ -93,6 +93,7 @@ enum UsageAction {
   DELETE_SENDER
   SCAN
   EXPORT
+  AI_ANALYZE
 }
 
 enum Provider {
