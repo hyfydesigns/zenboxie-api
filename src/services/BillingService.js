@@ -70,8 +70,27 @@ async function createCheckoutSession(user, tier) {
   const priceId = PRICE_IDS[tier]?.();
   if (!priceId) throw new Error(`No Stripe price configured for tier: ${tier}`);
 
-  const customerId = await ensureCustomer(user);
   const base = process.env.FRONTEND_URL || "http://localhost:5173";
+
+  // If the user already has an active subscription, upgrade it in-place
+  // instead of creating a second subscription.
+  const existingSub = await db.subscription.findUnique({ where: { userId: user.id } });
+  if (existingSub?.stripeSubId && existingSub.status !== "CANCELED") {
+    const stripeSub = await stripe.subscriptions.retrieve(existingSub.stripeSubId);
+    const currentItemId = stripeSub.items.data[0]?.id;
+
+    if (currentItemId) {
+      await stripe.subscriptions.update(existingSub.stripeSubId, {
+        items: [{ id: currentItemId, price: priceId }],
+        proration_behavior: "always_invoice", // charge/credit difference immediately
+        metadata: { userId: user.id },
+      });
+      // Return the success URL directly — no new checkout session needed
+      return `${base}/account?upgraded=1`;
+    }
+  }
+
+  const customerId = await ensureCustomer(user);
 
   const session = await stripe.checkout.sessions.create({
     customer: customerId,
@@ -205,7 +224,26 @@ async function handleWebhook(rawBody, signature) {
       break;
     }
     case "customer.subscription.created":
-    case "customer.subscription.updated":
+    case "customer.subscription.updated": {
+      const sub = event.data.object;
+      const prevSub = event.data.previous_attributes;
+      await syncSubscription(sub);
+
+      // Send confirmation email when price changes (i.e. tier upgrade)
+      if (event.type === "customer.subscription.updated" && prevSub?.items) {
+        const userId = sub.metadata?.userId;
+        if (userId) {
+          const priceId = sub.items?.data?.[0]?.price?.id;
+          const tier = priceId === process.env.STRIPE_PREMIUM_PRICE_ID ? "PREMIUM"
+                     : priceId === process.env.STRIPE_PRO_PRICE_ID ? "PRO" : null;
+          if (tier) {
+            const user = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
+            if (user?.email) sendSubscriptionEmail(user.email, tier).catch(() => {});
+          }
+        }
+      }
+      break;
+    }
     case "customer.subscription.deleted":
       await syncSubscription(event.data.object);
       break;
