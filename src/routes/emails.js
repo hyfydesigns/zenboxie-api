@@ -139,7 +139,14 @@ router.get("/analyze/stream", tierGuard.canScan(), async (req, res, next) => {
     sessionStore.update(req.sessionId, { cachedSenders: senders });
 
     const safe = senders.map(({ _uids, ...s }) => s);
-    send({ type: "done", senders: safe, total: safe.length, scanLimit: scanLimit === Infinity ? null : scanLimit });
+
+    // Warn Yahoo users that their IMAP server caps responses at ~10,000 emails
+    const isYahoo = session.imapConfig?.host?.includes("yahoo.com");
+    const providerWarning = isYahoo && safe.length >= 9900
+      ? "Yahoo's IMAP server limits access to your 10,000 most recent emails. Older emails are not visible to Zenboxie."
+      : null;
+
+    send({ type: "done", senders: safe, total: safe.length, scanLimit: scanLimit === Infinity ? null : scanLimit, providerWarning });
     res.end();
   } catch (err) {
     send({ type: "error", message: err.message });
