@@ -149,7 +149,8 @@ class ImapService {
             group.subjects.push(msg.envelope.subject);
           }
           if (msg.envelope?.date) {
-            group.dates.push(new Date(msg.envelope.date));
+            const d = new Date(msg.envelope.date);
+            if (!isNaN(d.getTime())) group.dates.push(d);
           }
 
           processed++;
@@ -271,7 +272,7 @@ async deleteFromSender(senderEmail, options = {}) {
           uid: msg.uid,
           subject: msg.envelope?.subject || "(no subject)",
           from: msg.envelope?.from?.[0]?.address,
-          date: msg.envelope?.date?.toISOString().split("T")[0],
+          date: msg.envelope?.date && !isNaN(new Date(msg.envelope.date).getTime()) ? new Date(msg.envelope.date).toISOString().split("T")[0] : null,
           sizeMb: parseFloat(((msg.size || 0) / 1024 / 1024).toFixed(2)),
         });
       }
