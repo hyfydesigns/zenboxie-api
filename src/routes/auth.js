@@ -74,7 +74,7 @@ router.post("/imap", optionalUser, async (req, res, next) => {
         const account = await db.connectedAccount.upsert({
           where: { userId_email: { userId: req.user.id, email } },
           create: { userId: req.user.id, provider: "IMAP", email, encryptedCredentials: encrypted },
-          update: { encryptedCredentials: encrypted, isActive: true, lastUsedAt: new Date() },
+          update: { provider: "IMAP", encryptedCredentials: encrypted, isActive: true, lastUsedAt: new Date() },
         });
         sessionStore.update(sessionId, { userId: req.user.id, connectedAccountId: account.id });
       } catch (dbErr) {
