@@ -38,7 +38,7 @@ module.exports = {
         connectedAccountId: account.id,
       });
     } else if (account.provider === "GMAIL") {
-      if (!creds.refreshToken) throw new Error("No refresh token stored for this Gmail account.");
+      if (!creds.refreshToken) throw new Error("GMAIL_OAUTH_REMOVED: This account was connected via Google OAuth which is no longer supported. Please disconnect it and reconnect using Gmail IMAP with an App Password.");
       const tokens = await GmailService.refreshToken(
         creds.refreshToken,
         process.env.GOOGLE_CLIENT_ID,
